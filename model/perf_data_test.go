@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,7 +14,10 @@ import (
 type perfRollupSuite struct {
 	r *PerfRollups
 	suite.Suite
+	perfTestDB string
 }
+
+type perfRollupEntries []PerfRollupValue
 
 func TestPerfRollupSuite(t *testing.T) {
 	suite.Run(t, new(perfRollupSuite))
@@ -164,8 +168,10 @@ func (s *perfRollupSuite) TestUpdateExistingEntry() {
 	defer session.Close()
 
 	c := session.DB(conf.DatabaseName).C(perfResultCollection)
+	fmt.Println("Inserted 234")
 	err = c.Insert(bson.M{"_id": s.r.id})
 	s.Require().NoError(err)
+	fmt.Println("Inserting mean with current version")
 	err = s.r.Add("mean", 4, true, 12.24)
 	s.NoError(err)
 
@@ -183,11 +189,10 @@ func (s *perfRollupSuite) TestUpdateExistingEntry() {
 	s.Equal(out.Rollups[0].Version, 4)
 	s.Equal(out.Rollups[0].Value, 12.24)
 	s.Equal(out.Rollups[0].UserSubmitted, true)
+
 	err = s.r.Add("mean", 3, true, 24.12) // should fail with older version
 	s.Error(err)
 
-	err = s.r.Add("mean", 5, false, 24.12)
-	s.NoError(err)
 	val, err := s.r.GetFloat("mean")
 	s.NoError(err)
 	s.Equal(24.12, val)
@@ -202,11 +207,9 @@ func (s *perfRollupSuite) TestUpdateExistingEntry() {
 func (s *perfRollupSuite) TearDownTest() {
 	conf, session, err := sink.GetSessionWithConfig(s.r.env)
 	s.Require().NoError(err)
-	defer session.Close()
-
 	c := session.DB(conf.DatabaseName).C(perfResultCollection)
-	err = c.DropCollection()
-	s.NoError(err)
+	s.NoError(c.DropCollection())
+	defer session.Close()
 }
 
 func (s *perfRollupSuite) TestValidate() {

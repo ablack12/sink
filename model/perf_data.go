@@ -18,8 +18,8 @@ const (
 	idField      = "_id"
 	rollupsField = "rollups"
 	nameField    = "name"
-	verField     = "version"
 	valField     = "val"
+	verField     = "version"
 	userField    = "user"
 	defaultVer   = 1
 )
@@ -42,8 +42,6 @@ type PerfRollups struct {
 	id        string
 	env       sink.Environment
 }
-
-type perfRollupEntries []PerfRollupValue
 
 func (v *PerfRollupValue) getIntLong() (int64, error) {
 	if val, ok := v.Value.(int64); ok {
@@ -71,52 +69,25 @@ func (r *PerfRollups) Add(name string, version int, userSubmitted bool, value in
 	if !r.populated {
 		return errors.New("rollups have not been populated")
 	}
-	conf, session, err := sink.GetSessionWithConfig(r.env)
-	if err != nil {
-		return errors.Wrap(err, "error connecting")
-	}
-	defer session.Close()
-	// 1) If in database, check version and make sure passed in version isn't older (if so, done)
-	c := session.DB(conf.DatabaseName).C(perfResultCollection)
-	search := bson.M{
-		idField: r.id,
-		bsonutil.GetDottedKeyName(rollupsField, nameField): name,
-	}
+
 	rollup := PerfRollupValue{
 		Name:          name,
 		Version:       version,
 		Value:         value,
 		UserSubmitted: userSubmitted,
 	}
-	selection := bson.M{
-		bsonutil.GetDottedKeyName(rollupsField, verField):  1,
-		bsonutil.GetDottedKeyName(rollupsField, nameField): 1,
-	}
 
-	out := struct {
-		Rollups perfRollupEntries `bson:"rollups"`
-	}{}
-	err = c.Find(search).Select(selection).One(&out)
+	err := r.updateExistingEntry(rollup)
+	if err != nil && errors.Cause(err) == mgo.ErrNotFound {
+		return r.insertNewEntry(rollup)
+	}
 	if err != nil {
-		if err != mgo.ErrNotFound {
-			return errors.Wrap(err, "error finding entry")
-		}
-		// entry DNE, add entry
-		return r.insertNewEntry(search, rollup)
+		return errors.Wrap(err, "error updating entry") //NOTE: if the version is outdated, update should return an error I think
 	}
-	// update existing entry
-	for _, entry := range out.Rollups {
-		if entry.Name == name {
-			if entry.Version > version {
-				return errors.New("outdated version")
-			}
-			break
-		}
-	}
-	return r.updateExistingEntry(search, rollup)
+	return nil
 }
 
-func (r *PerfRollups) insertNewEntry(search map[string]interface{}, rollup PerfRollupValue) error {
+func (r *PerfRollups) insertNewEntry(rollup PerfRollupValue) error {
 	conf, session, err := sink.GetSessionWithConfig(r.env)
 	if err != nil {
 		return errors.Wrap(err, "error connecting")
@@ -124,7 +95,7 @@ func (r *PerfRollups) insertNewEntry(search map[string]interface{}, rollup PerfR
 	defer session.Close()
 
 	insert := bson.M{rollupsField: rollup}
-	search = bson.M{idField: r.id}
+	search := bson.M{idField: r.id}
 	c := session.DB(conf.DatabaseName).C(perfResultCollection)
 	err = c.Update(search, bson.M{"$push": insert})
 	if err != nil {
@@ -134,21 +105,39 @@ func (r *PerfRollups) insertNewEntry(search map[string]interface{}, rollup PerfR
 	r.Count++
 	return nil
 }
-func (r *PerfRollups) updateExistingEntry(search map[string]interface{}, rollup PerfRollupValue) error {
+
+func (r *PerfRollups) updateExistingEntry(rollup PerfRollupValue) error {
 	conf, session, err := sink.GetSessionWithConfig(r.env)
 	if err != nil {
 		return errors.Wrap(err, "error connecting")
 	}
 	defer session.Close()
-	update := bson.M{
-		bsonutil.GetDottedKeyName(rollupsField, "$", valField):  rollup.Value,
-		bsonutil.GetDottedKeyName(rollupsField, "$", verField):  rollup.Version,
-		bsonutil.GetDottedKeyName(rollupsField, "$", userField): rollup.UserSubmitted,
+	search := bson.M{
+		idField: r.id,
+		bsonutil.GetDottedKeyName(rollupsField, nameField): rollup.Name,
 	}
+	update := bson.M{
+		bsonutil.GetDottedKeyName(rollupsField, "$[elem]", verField):  rollup.Version,
+		bsonutil.GetDottedKeyName(rollupsField, "$[elem]", valField):  rollup.Value,
+		bsonutil.GetDottedKeyName(rollupsField, "$[elem]", userField): rollup.UserSubmitted,
+	}
+	arrayFilter := bson.M{
+		bsonutil.GetDottedKeyName("elem", verField): bson.M{"$lt": rollup.Version},
+	}
+	change := mgo.Change{
+		ArrayFilters: []bson.M{arrayFilter},
+		Update:       bson.M{"$set": update},
+	}
+
 	c := session.DB(conf.DatabaseName).C(perfResultCollection)
-	err = c.Update(search, bson.M{"$set": update})
+	var result PerfRollups
+	changeInfo, err := c.Find(search).Apply(change, &result)
 	if err != nil {
 		return errors.Wrap(err, "error updating an existing entry")
+	}
+
+	if changeInfo.Matched > 0 && changeInfo.Updated == 0 { // TODO: mess around with this
+		return errors.New("error updating with outdated version")
 	}
 	for i := range r.Stats {
 		if r.Stats[i].Name == rollup.Name {

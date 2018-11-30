@@ -4229,15 +4229,17 @@ func fixMROut(out interface{}) interface{} {
 // Change holds fields for running a findAndModify MongoDB command via
 // the Query.Apply method.
 type Change struct {
-	Update    interface{} // The update document
-	Upsert    bool        // Whether to insert in case the document isn't found
-	Remove    bool        // Whether to remove the document found rather than updating
-	ReturnNew bool        // Should the modified document be returned rather than the old one
+	Update       interface{} // The update document
+	ArrayFilters interface{} // List of array filter documents
+	Upsert       bool        // Whether to insert in case the document isn't found
+	Remove       bool        // Whether to remove the document found rather than updating
+	ReturnNew    bool        // Should the modified document be returned rather than the old one
 }
 
 type findModifyCmd struct {
 	Collection                  string      "findAndModify"
 	Query, Update, Sort, Fields interface{} ",omitempty"
+	ArrayFilters                interface{} ",omitempty"
 	Upsert, Remove, New         bool        ",omitempty"
 }
 
@@ -4288,14 +4290,15 @@ func (q *Query) Apply(change Change, result interface{}) (info *ChangeInfo, err 
 	cname := op.collection[c+1:]
 
 	cmd := findModifyCmd{
-		Collection: cname,
-		Update:     change.Update,
-		Upsert:     change.Upsert,
-		Remove:     change.Remove,
-		New:        change.ReturnNew,
-		Query:      op.query,
-		Sort:       op.options.OrderBy,
-		Fields:     op.selector,
+		Collection:   cname,
+		Update:       change.Update,
+		Upsert:       change.Upsert,
+		Remove:       change.Remove,
+		New:          change.ReturnNew,
+		ArrayFilters: change.ArrayFilters,
+		Query:        op.query,
+		Sort:         op.options.OrderBy,
+		Fields:       op.selector,
 	}
 
 	session = session.Clone()
